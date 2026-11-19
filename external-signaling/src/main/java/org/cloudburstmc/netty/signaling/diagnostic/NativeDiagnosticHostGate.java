@@ -5,6 +5,7 @@ import org.cloudburstmc.netty.signaling.admission.NativeHostIdentity;
 import org.cloudburstmc.netty.signaling.admission.VerifiedAdmission;
 import org.cloudburstmc.netty.signaling.control.AssistedJoin;
 import org.cloudburstmc.netty.util.nethernet.EndpointAddress;
+import org.cloudburstmc.netty.util.nethernet.SdpUtil;
 import tel.schich.libdatachannel.*;
 import java.net.*;
 import java.time.Instant;
@@ -397,7 +398,7 @@ public final class NativeDiagnosticHostGate implements AutoCloseable {
             if (!authorized(session, observe())) {
                 throw invalid();
             }
-            return session.peer.localDescription();
+            return SdpUtil.withoutDefaultDestination(session.peer.localDescription());
         } catch (RuntimeException failure) {
             if (session != null) {
                 session.settled = true;

@@ -25,6 +25,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -94,6 +95,37 @@ public final class SdpUtil {
         } catch (NumberFormatException | UnknownHostException notAnEndpoint) {
             return null;
         }
+    }
+
+    /**
+     * The description with {@code c=} set to {@code IN IP4 0.0.0.0} and every {@code m=} port set to 9,
+     * the placeholders trickle ICE uses when there is no default candidate.
+     * <p>
+     * libdatachannel fills both from the first candidate it gathered, so they name this host even
+     * after the candidates have been filtered or replaced. ICE peers ignore them and connect through
+     * the candidates, so every answer goes through here before it leaves. A port of 0 marks rejected
+     * media and is kept.
+     *
+     * @param sdp The description
+     * @return The description without this host's address or media port outside its candidates
+     */
+    public static String withoutDefaultDestination(String sdp) {
+        String eol = sdp.contains("\r\n") ? "\r\n" : "\n";
+        return Arrays.stream(sdp.split("\r\n|\n", -1))
+                .map(SdpUtil::withoutDefaultDestinationLine)
+                .collect(Collectors.joining(eol));
+    }
+
+    private static String withoutDefaultDestinationLine(String line) {
+        if (line.startsWith("c=")) {
+            return "c=IN IP4 0.0.0.0";
+        }
+        // m=<media> <port> <proto> <fmt>
+        String[] parts = line.split(" ", 3);
+        if (line.startsWith("m=") && parts.length == 3 && !"0".equals(parts[1])) {
+            return parts[0] + " 9 " + parts[2];
+        }
+        return line;
     }
 
     /**
@@ -247,26 +279,20 @@ public final class SdpUtil {
     }
 
     /**
-     * Announces only the endpoints in {@code allowed}, each in the form it calls for.
+     * Announces exactly the endpoints in {@code allowed}, and none of the candidates ICE gathered on
+     * its own. An operator who lists addresses, such as a DDoS protection proxy or a port forward,
+     * means only those, and anything else would tell players where this host is.
      * <p>
-     * ICE gathers a candidate on every interface it can see, which on a host network includes
-     * container and overlay addresses that are unreachable from outside. Each one costs the remote
-     * peer a round of connectivity checks before it gives up, so a host that knows which of its
-     * addresses are reachable can announce only those.
-     * <p>
-     * An allowed endpoint this host did not gather is the public side of a NAT that forwards it to
-     * the media port here, and is announced as a server reflexive candidate based on a host
-     * candidate of the same family, on that host's port when the endpoint has none. That works
-     * because libjuice matches inbound traffic by its source and never by the address it was sent
-     * to. Nothing here can tell a forward from a mistake, so the list only ever narrows the host
-     * candidates, and only to endpoints this host holds: one naming none of them leaves every
-     * candidate in place, and a wrong endpoint costs the peer a failed check rather than the
-     * connection. Reflexive and relayed candidates always stay, since they are what the outside
-     * sees rather than an interface.
+     * An endpoint a UDP host candidate here names is announced as that candidate. Any other is
+     * something that forwards to the media port here, and is announced as a server reflexive
+     * candidate of the same family with its related address hidden, on the media port when the
+     * endpoint has none. That works because libjuice matches inbound traffic by its source, never by
+     * the address it was sent to. A wrong endpoint means players cannot connect through it, which is
+     * better than quietly falling back to this host's own addresses.
      *
      * @param sdp     The description to filter
-     * @param allowed The endpoints that may be announced, port 0 for any, empty to announce everything
-     * @return The filtered description
+     * @param allowed The endpoints to announce, port 0 for the media port, empty to announce everything
+     * @return The filtered description, with no candidates when none of the endpoints can be announced
      */
     public static String withAdvertisedCandidates(String sdp, List<InetSocketAddress> allowed) {
         if (allowed.isEmpty()) {
@@ -277,7 +303,7 @@ public final class SdpUtil {
         List<InetSocketAddress> held = new ArrayList<>();
         List<InetSocketAddress> foreign = new ArrayList<>();
         for (InetSocketAddress endpoint : allowed) {
-            if (gathered.names(endpoint)) {
+            if (gathered.udpHosts().stream().anyMatch(host -> names(endpoint, host))) {
                 held.add(endpoint);
             } else {
                 foreign.add(endpoint);
@@ -286,14 +312,12 @@ public final class SdpUtil {
         // A held host is the more honest base for a translation, so it goes first for its family
         List<String[]> hosts = new ArrayList<>(gathered.udpHosts());
         hosts.sort(Comparator.comparing((String[] host) -> !namedByAny(held, host)));
-        List<String> translated = translatedCandidates(hosts, foreign, Set.of(), false);
+        List<String> translated = translatedCandidates(hosts, foreign, Set.of(), true);
         if (held.isEmpty() && translated.isEmpty()) {
-            log.warn("None of the gathered ICE candidates match the advertised addresses {}, "
-                    + "announcing all of them instead", allowed);
-            return sdp;
+            log.warn("None of the advertised addresses {} can be announced from the gathered ICE candidates, "
+                    + "so the answer names none and players cannot connect", allowed);
         }
-        return gathered.rewrite(line -> !held.isEmpty() && !isReflexiveOrRelayed(line)
-                && !namedByAny(held, line.split(" ")), translated);
+        return gathered.rewrite(line -> !isHostCandidate(line) || !namedByAny(held, line.split(" ")), translated);
     }
 
     /**
@@ -352,10 +376,6 @@ public final class SdpUtil {
                 }
             }
             return new Gathered(lines, candidates, udpHosts);
-        }
-
-        boolean names(InetSocketAddress endpoint) {
-            return this.candidates.stream().anyMatch(candidate -> SdpUtil.names(endpoint, candidate));
         }
 
         /** Every UDP candidate as {@code address port}, in the form {@link #translatedCandidates} compares. */
@@ -447,12 +467,6 @@ public final class SdpUtil {
 
     private static boolean isHostCandidate(String candidate) {
         return "host".equals(candidateType(candidate));
-    }
-
-    /** Whether a STUN or TURN server produced the candidate, describing the outside rather than an interface. */
-    private static boolean isReflexiveOrRelayed(String candidate) {
-        String type = candidateType(candidate);
-        return "srflx".equals(type) || "prflx".equals(type) || "relay".equals(type);
     }
 
     private static void appendAll(StringBuilder out, List<String> lines) {

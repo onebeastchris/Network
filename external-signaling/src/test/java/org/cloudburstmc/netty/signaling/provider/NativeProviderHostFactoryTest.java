@@ -225,7 +225,7 @@ class NativeProviderHostFactoryTest {
     }
 
     @Test
-    void absentPolicyPreservesAdditiveBehavior() throws Exception {
+    void absentPolicyAlsoPublishesOnlyTheConfiguredEndpoints() throws Exception {
         var endpointJson = "[{\"address\":\"8.8.8.8\",\"port\":29133}]";
         var bind = endpoint("1.1.1.1", 19133);
         var options = strict(endpointJson);
@@ -237,9 +237,8 @@ class NativeProviderHostFactoryTest {
                                 bind, Map.of("advertisedEndpoints", endpointJson))
                         .get()
                         .advertised();
-        assertEquals(2, legacy.size());
-        assertTrue(legacy.contains(bind));
-        assertTrue(legacy.contains(endpoint("8.8.8.8", 29133)));
+        // Adding the bound address to a configured set would tell players where a host behind a forward is
+        assertEquals(List.of(endpoint("8.8.8.8", 29133)), legacy);
     }
 
     @Test

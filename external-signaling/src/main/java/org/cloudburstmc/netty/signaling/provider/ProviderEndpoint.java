@@ -24,7 +24,8 @@ import java.net.*;
 import java.util.*;
 
 /**
- * Bound addresses plus operator-provisioned forwarding endpoints. Discovery never guesses NAT mappings.
+ * Operator-provisioned forwarding endpoints, or the bound addresses when there are none. Discovery never
+ * guesses NAT mappings.
  */
 record ProviderEndpoint(InetSocketAddress bind, List<InetSocketAddress> advertised) {
     public static ProviderEndpoint resolve(InetSocketAddress bind, List<InetSocketAddress> external, boolean localDevelopment) throws IOException {
@@ -64,6 +65,10 @@ record ProviderEndpoint(InetSocketAddress bind, List<InetSocketAddress> advertis
                                     List<InetAddress> interfaces) throws IOException {
         checkBind(bind);
         Set<InetSocketAddress> endpoints = configured(external, localDevelopment);
+        if (!endpoints.isEmpty()) {
+            // Configured endpoints replace this host's own addresses, which they may be hiding
+            return sorted(bind, endpoints);
+        }
         if (!bind.getAddress().isAnyLocalAddress()) {
             // A local proxy may forward a configured external endpoint to a loopback listener.
             if (EndpointAddress.advertisable(bind.getAddress(), localDevelopment)) {

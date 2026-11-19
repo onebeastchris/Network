@@ -10,18 +10,25 @@ class ProviderEndpointTest {
     private static InetAddress address(String value) throws Exception { return InetAddress.getByName(value); }
     private static InetSocketAddress endpoint(String value, int port) { return new InetSocketAddress(value, port); }
 
-    @Test void concreteBindingPublishesOnlyItsAddressPlusConfiguredForwarding() throws Exception {
+    @Test void concreteBindingPublishesOnlyTheConfiguredForwarding() throws Exception {
         var bind = endpoint("192.168.1.5", 19133);
         var external = endpoint("8.8.8.8", 29133);
         var result = ProviderEndpoint.resolve(bind, List.of(external), false, List.of(address("10.0.0.2")));
-        assertEquals(List.of(external, bind), result.advertised());
+        assertEquals(List.of(external), result.advertised());
         assertTrue(result.warnings().isEmpty(), "Public forwarding avoids a misleading private-only warning");
     }
 
     @Test void wildcardEnumeratesMultipleBoundInterfacesAndDeduplicates() throws Exception {
-        var result = ProviderEndpoint.resolve(endpoint("0.0.0.0", 19133), List.of(endpoint("8.8.8.8", 29133)), false,
-            List.of(address("127.0.0.1"), address("169.254.1.1"), address("192.168.1.5"), address("100.117.6.116"), address("8.8.8.8"), address("8.8.8.8"), address("fd00::1")));
-        assertEquals(List.of(endpoint("8.8.8.8", 19133), endpoint("8.8.8.8", 29133), endpoint("100.117.6.116", 19133), endpoint("192.168.1.5", 19133)), result.advertised());
+        var interfaces = List.of(address("127.0.0.1"), address("169.254.1.1"), address("192.168.1.5"), address("100.117.6.116"), address("8.8.8.8"), address("8.8.8.8"), address("fd00::1"));
+        var result = ProviderEndpoint.resolve(endpoint("0.0.0.0", 19133), List.of(), false, interfaces);
+        assertEquals(List.of(endpoint("8.8.8.8", 19133), endpoint("100.117.6.116", 19133), endpoint("192.168.1.5", 19133)), result.advertised());
+    }
+
+    @Test void configuredForwardingReplacesEveryInterface() throws Exception {
+        // Players behind a proxy or forward must not learn this host's own addresses
+        var interfaces = List.of(address("192.168.1.5"), address("100.117.6.116"), address("8.8.8.8"), address("2606:4700:4700::1111"));
+        var result = ProviderEndpoint.resolve(endpoint("::", 19133), List.of(endpoint("8.8.8.8", 29133)), false, interfaces);
+        assertEquals(List.of(endpoint("8.8.8.8", 29133)), result.advertised());
     }
 
     @Test void ipv6WildcardDiscoversBothFamiliesButConcreteIpv6DoesNot() throws Exception {
@@ -38,7 +45,7 @@ class ProviderEndpointTest {
     @Test void explicitForwardersMayTranslateAddressFamilies() throws Exception {
         var result = ProviderEndpoint.resolve(endpoint("fd00::1", 19133), List.of(endpoint("8.8.8.8", 29133)), false, List.of());
         assertTrue(result.warnings().isEmpty());
-        assertEquals(2, result.advertised().size());
+        assertEquals(List.of(endpoint("8.8.8.8", 29133)), result.advertised());
     }
 
     @Test void explicitForwardersMayTargetLoopbackWithoutPublishingLoopback() throws Exception {

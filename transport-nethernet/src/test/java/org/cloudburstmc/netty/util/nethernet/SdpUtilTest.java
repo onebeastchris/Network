@@ -102,9 +102,13 @@ class SdpUtilTest {
     }
 
     @Test
-    void keepsEveryCandidateWhenNothingCouldBeAnnounced() {
-        // Nothing gathered matches, and nothing of that family exists to translate from
-        assertEquals(SDP, SdpUtil.withAdvertisedCandidates(SDP, endpoints("2001:db8::1")));
+    void announcesNothingRatherThanThisHostWhenNothingCouldBeAnnounced() {
+        // Nothing gathered matches, and nothing of that family exists to translate from. Falling back
+        // to every gathered candidate would hide the mistake and tell players where this host is
+        String filtered = SdpUtil.withAdvertisedCandidates(SDP, endpoints("2001:db8::1"));
+        assertEquals("v=0\r\n"
+                + "o=- 1 2 IN IP4 127.0.0.1\r\n"
+                + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n", filtered);
     }
 
     private static final String HOST_ONLY_OFFER = "v=0\r\n"
@@ -307,12 +311,21 @@ class SdpUtilTest {
     private static final String TRANSLATED =
             "a=candidate:80000000 1 udp 1694498815 203.0.113.99 19135 typ srflx raddr 10.88.0.4 rport 19135\r\n";
 
+    /** {@link #TRANSLATED} as an advertised address announces it, with this host's address hidden. */
+    private static final String ADVERTISED =
+            "a=candidate:80000000 1 udp 1694498815 203.0.113.99 19135 typ srflx raddr 0.0.0.0 rport 0\r\n";
+
+    /** {@link #GATHERED} announcing only {@code candidates}. */
+    private static String gatheredWithOnly(String candidates) {
+        return "v=0\r\n" + candidates + "a=end-of-candidates\r\n"
+                + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n";
+    }
+
     @Test
     void announcesAnAddressThisHostDoesNotHoldOnTheMediaPort() {
-        // Everything gathered stays, since nothing listed is ours to narrow to. One line for the
-        // address and port whatever the number of interfaces, and never for another family or transport
-        String expected = GATHERED.replace("a=end-of-candidates", TRANSLATED + "a=end-of-candidates");
-        assertEquals(expected, SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("203.0.113.99")));
+        // Only the listed address, once whatever the number of interfaces, and never for another
+        // family or transport. Nothing gathered stays, since every one of them names this host
+        assertEquals(gatheredWithOnly(ADVERTISED), SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("203.0.113.99")));
     }
 
     @Test
@@ -349,8 +362,9 @@ class SdpUtilTest {
     void narrowsToTheHeldAddressesAndTranslatesTheRest() {
         String result = SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("10.88.0.4", "203.0.113.99"));
         assertTrue(result.contains("a=candidate:1 1 udp 2130706431 10.88.0.4 19135 typ host\r\n"));
-        assertTrue(result.contains(TRANSLATED));
+        assertTrue(result.contains(ADVERTISED));
         assertFalse(result.contains("172.17.0.2"));
+        assertFalse(result.contains("fd7a::1"));
     }
 
     @Test
@@ -383,17 +397,18 @@ class SdpUtilTest {
 
     @Test
     void aTranslationIsBasedOnAHeldHostWhenThereIsOne() {
-        String result = SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("172.17.0.2", "203.0.113.99"));
-        assertTrue(result.contains(" 203.0.113.99 19135 typ srflx raddr 172.17.0.2 rport 19135\r\n"));
+        // The base is hidden, so it shows only in the port a bare address takes
+        String gathered = GATHERED.replace("172.17.0.2 19135", "172.17.0.2 19136");
+        String result = SdpUtil.withAdvertisedCandidates(gathered, endpoints("172.17.0.2", "203.0.113.99"));
+        assertTrue(result.contains(" 203.0.113.99 19136 typ srflx raddr 0.0.0.0 rport 0\r\n"), result);
         assertFalse(result.contains("10.88.0.4"));
     }
 
     @Test
     void translatesOnlyWithinTheFamily() {
         String result = SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("2001:db8::99"));
-        assertTrue(result.contains(" 2001:db8:0:0:0:0:0:99 19135 typ srflx raddr fd7a::1 rport 19135\r\n"));
-        assertFalse(result.contains("raddr 10.88.0.4"));
-        assertTrue(result.contains("a=candidate:1 1 udp 2130706431 10.88.0.4 19135 typ host\r\n"));
+        assertEquals(gatheredWithOnly(
+                "a=candidate:80000000 1 udp 1694498815 2001:db8:0:0:0:0:0:99 19135 typ srflx raddr :: rport 0\r\n"), result);
     }
 
     @Test
@@ -405,12 +420,10 @@ class SdpUtilTest {
     }
 
     @Test
-    void announcesTheExternalPortAndKeepsTheLocalRelatedPort() {
+    void announcesTheExternalPortWithoutTheLocalOne() {
         String translated = "a=candidate:80000000 1 udp 1694498815 203.0.113.99 56789 "
-                + "typ srflx raddr 10.88.0.4 rport 19135\r\n";
-        String expected = GATHERED.replace("a=end-of-candidates", translated + "a=end-of-candidates");
-
-        assertEquals(expected, SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("203.0.113.99:56789")));
+                + "typ srflx raddr 0.0.0.0 rport 0\r\n";
+        assertEquals(gatheredWithOnly(translated), SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("203.0.113.99:56789")));
     }
 
     @Test
@@ -418,9 +431,9 @@ class SdpUtilTest {
         String result = SdpUtil.withAdvertisedCandidates(GATHERED,
                 endpoints("203.0.113.99:56789", "203.0.113.99:46565"));
 
-        assertTrue(result.contains(" 203.0.113.99 56789 typ srflx raddr 10.88.0.4 rport 19135\r\n"));
-        assertTrue(result.contains(" 203.0.113.99 46565 typ srflx raddr 10.88.0.4 rport 19135\r\n"));
-        assertEquals(2, result.lines().filter(line -> line.contains(" typ srflx ")).count());
+        assertTrue(result.contains(" 203.0.113.99 56789 typ srflx raddr 0.0.0.0 rport 0\r\n"));
+        assertTrue(result.contains(" 203.0.113.99 46565 typ srflx raddr 0.0.0.0 rport 0\r\n"));
+        assertEquals(2, result.lines().filter(line -> line.startsWith("a=candidate:")).count());
     }
 
     @Test
@@ -428,17 +441,17 @@ class SdpUtilTest {
         String result = SdpUtil.withAdvertisedCandidates(GATHERED,
                 endpoints("[2001:db8::99]:56789", "[2001:0db8:0:0:0:0:0:99]:56789"));
 
-        assertTrue(result.contains(" 2001:db8:0:0:0:0:0:99 56789 typ srflx raddr fd7a::1 rport 19135\r\n"));
-        assertEquals(1, result.lines().filter(line -> line.contains(" typ srflx ")).count());
+        assertEquals(gatheredWithOnly(
+                "a=candidate:80000000 1 udp 1694498815 2001:db8:0:0:0:0:0:99 56789 typ srflx raddr :: rport 0\r\n"), result);
     }
 
     @Test
     void translatesADifferentPortEvenWhenTheAddressWasGathered() {
+        // A forward from another port on this host's own address, so the gathered port stays unannounced
         String result = SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("10.88.0.4:56789"));
 
-        assertTrue(result.contains(" 10.88.0.4 56789 typ srflx raddr 10.88.0.4 rport 19135\r\n"));
-        assertTrue(result.contains("a=candidate:1 1 udp 2130706431 10.88.0.4 19135 typ host\r\n"));
-        assertTrue(result.contains("a=candidate:2 1 udp 2130706431 172.17.0.2 19135 typ host\r\n"));
+        assertEquals(gatheredWithOnly(
+                "a=candidate:80000000 1 udp 1694498815 10.88.0.4 56789 typ srflx raddr 0.0.0.0 rport 0\r\n"), result);
     }
 
     @Test
@@ -459,31 +472,31 @@ class SdpUtilTest {
     void doesNotMistakeATcpCandidateForAnAlreadyGatheredUdpEndpoint() {
         String result = SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("10.88.0.4:9"));
 
-        assertTrue(result.contains(" 10.88.0.4 9 typ srflx raddr 10.88.0.4 rport 19135\r\n"));
-        assertTrue(result.contains("a=candidate:2 1 udp 2130706431 172.17.0.2 19135 typ host\r\n"));
+        assertEquals(gatheredWithOnly(
+                "a=candidate:80000000 1 udp 1694498815 10.88.0.4 9 typ srflx raddr 0.0.0.0 rport 0\r\n"), result);
     }
 
     @Test
     void deduplicatesBareAddressesAndEndpointsThatAnnounceTheSameCandidate() {
         String result = SdpUtil.withAdvertisedCandidates(GATHERED, endpoints("203.0.113.99", "203.0.113.99:19135"));
 
-        assertEquals(GATHERED.replace("a=end-of-candidates", TRANSLATED + "a=end-of-candidates"), result);
+        assertEquals(gatheredWithOnly(ADVERTISED), result);
     }
 
     @Test
-    void leavesTheDescriptionAloneWithoutAUdpHostOfTheSameFamily() {
+    void announcesNothingWithoutAUdpHostOfTheSameFamily() {
         String ipv6Only = "v=0\r\n"
                 + "a=candidate:1 1 udp 2130706431 fd7a::1 19135 typ host\r\n";
         String tcpOnly = "v=0\r\n"
                 + "a=candidate:1 1 tcp 2130706431 10.88.0.4 9 typ host tcptype active\r\n";
 
-        assertEquals(ipv6Only, SdpUtil.withAdvertisedCandidates(ipv6Only, endpoints("203.0.113.99:56789")));
-        assertEquals(tcpOnly, SdpUtil.withAdvertisedCandidates(tcpOnly, endpoints("203.0.113.99:56789")));
+        assertEquals("v=0\r\n", SdpUtil.withAdvertisedCandidates(ipv6Only, endpoints("203.0.113.99:56789")));
+        assertEquals("v=0\r\n", SdpUtil.withAdvertisedCandidates(tcpOnly, endpoints("203.0.113.99:56789")));
     }
 
     @Test
-    void narrowingLeavesReflexiveAndRelayedCandidatesAlone() {
-        // A STUN or TURN server answers with what the outside sees, which is never an interface
+    void reflexiveAndRelayedCandidatesGoUnlessListed() {
+        // A STUN or TURN mapping says where this host is as much as an interface does
         String gathered = "v=0\r\n"
                 + "a=candidate:1 1 udp 2130706431 192.168.1.5 19135 typ host\r\n"
                 + "a=candidate:2 1 udp 2130706431 172.17.0.2 19135 typ host\r\n"
@@ -494,16 +507,13 @@ class SdpUtilTest {
         String result = SdpUtil.withAdvertisedCandidates(gathered, endpoints("192.168.1.5"));
         assertTrue(result.contains("192.168.1.5 19135 typ host"));
         assertFalse(result.contains("172.17.0.2"));
-        assertTrue(result.contains("203.0.113.7 19135 typ srflx"));
-        assertTrue(result.contains("198.51.100.9 40000 typ relay"));
+        assertFalse(result.contains("203.0.113.7"));
+        assertFalse(result.contains("198.51.100.9"));
 
-        String withEndpoint = SdpUtil.withAdvertisedCandidates(gathered,
-                endpoints("192.168.1.5:19135", "203.0.113.99:56789"));
-        assertTrue(withEndpoint.contains("192.168.1.5 19135 typ host"));
-        assertFalse(withEndpoint.contains("172.17.0.2"));
-        assertTrue(withEndpoint.contains("203.0.113.7 19135 typ srflx"));
-        assertTrue(withEndpoint.contains("198.51.100.9 40000 typ relay"));
-        assertTrue(withEndpoint.contains("203.0.113.99 56789 typ srflx raddr 192.168.1.5 rport 19135"));
+        String listed = SdpUtil.withAdvertisedCandidates(gathered, endpoints("203.0.113.7:19135"));
+        assertEquals("v=0\r\n"
+                + "a=candidate:80000000 1 udp 1694498815 203.0.113.7 19135 typ srflx raddr 0.0.0.0 rport 0\r\n"
+                + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n", listed);
     }
 
     @Test
@@ -540,5 +550,50 @@ class SdpUtilTest {
 
     private static List<InetSocketAddress> endpoints(String... values) {
         return Stream.of(values).map(EndpointAddress::parseEndpoint).toList();
+    }
+
+    /** An answer as libdatachannel writes it, with c= and the m= port taken from a host candidate. */
+    private static final String ANSWER = "v=0\r\n"
+            + "m=application 19135 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+            + "c=IN IP4 203.0.113.10\r\n"
+            + "a=mid:0\r\n"
+            + "a=candidate:1 1 udp 2130706431 203.0.113.10 19135 typ host\r\n"
+            + "a=candidate:2 1 udp 2130706431 2001:db8::10 19135 typ host\r\n"
+            + "a=candidate:3 1 udp 1694498815 198.51.100.9 40000 typ srflx raddr 203.0.113.10 rport 19135\r\n"
+            + "a=end-of-candidates\r\n";
+
+    @Test
+    void replacesOnlyTheDefaultDestination() {
+        assertEquals(ANSWER.replace("m=application 19135", "m=application 9").replace("c=IN IP4 203.0.113.10", "c=IN IP4 0.0.0.0"),
+                SdpUtil.withoutDefaultDestination(ANSWER));
+    }
+
+    @Test
+    void keepsRejectedMediaAndLineEndings() {
+        String rejected = "v=0\nm=application 0 UDP/DTLS/SCTP webrtc-datachannel\nc=IN IP6 2001:db8::10\n";
+        assertEquals("v=0\nm=application 0 UDP/DTLS/SCTP webrtc-datachannel\nc=IN IP4 0.0.0.0\n",
+                SdpUtil.withoutDefaultDestination(rejected));
+    }
+
+    @Test
+    void aProxyBehindAdvertiseAddressesHidesThisHostEntirely() {
+        // What a player receives: the answer as the channel sends it, then as signaling announces it
+        String sent = SdpUtil.withAdvertisedCandidates(SdpUtil.withoutDefaultDestination(ANSWER),
+                endpoints("198.51.100.200:19132"));
+        assertEquals("v=0\r\n"
+                + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+                + "c=IN IP4 0.0.0.0\r\n"
+                + "a=mid:0\r\n"
+                + "a=candidate:80000000 1 udp 1694498815 198.51.100.200 19132 typ srflx raddr 0.0.0.0 rport 0\r\n"
+                + "a=end-of-candidates\r\n", sent);
+    }
+
+    @Test
+    void relaysHideThisHostEntirely() {
+        String sent = SdpUtil.withRelayedCandidates(SdpUtil.withoutDefaultDestination(ANSWER),
+                endpoints("198.51.100.200:19132"));
+        assertFalse(sent.contains("203.0.113.10"), sent);
+        assertFalse(sent.contains("2001:db8::10"), sent);
+        assertFalse(sent.contains("19135"), sent);
     }
 }

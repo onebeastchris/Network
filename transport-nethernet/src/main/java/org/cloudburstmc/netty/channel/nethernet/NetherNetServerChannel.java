@@ -367,7 +367,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         if (signaling.usesTrickleIce()) {
             log.trace("Sending Answer SDP for {}", connectionId);
             signaling.sendSignal(remoteNetworkId, NetherNetConstants.buildSignalConnectResponse(connectionId,
-                    serverIdentity.withAssertion(pc.localDescription())));
+                    serverIdentity.withAssertion(SdpUtil.withoutDefaultDestination(pc.localDescription()))));
             // Gathering starts inside setLocalDescription, so some candidates are already waiting
             observer.localCandidates.deliverTo(signal -> signaling.sendSignal(remoteNetworkId, signal));
         }
@@ -619,7 +619,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
             log.trace("Sending full SDP (with gathered candidates) for {}", connectionId);
             try {
-                signaling.sendDescription(remoteNetworkId, serverIdentity.withAssertion(local));
+                signaling.sendDescription(remoteNetworkId,
+                        serverIdentity.withAssertion(SdpUtil.withoutDefaultDestination(local)));
             } catch (Exception e) {
                 log.error("Failed to sign the full SDP for {}", connectionId, e);
             }

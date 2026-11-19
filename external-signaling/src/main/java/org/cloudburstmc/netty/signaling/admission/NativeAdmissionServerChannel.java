@@ -28,6 +28,7 @@ import org.cloudburstmc.netty.signaling.control.AssistedJoin;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import org.cloudburstmc.netty.util.nethernet.EndpointAddress;
+import org.cloudburstmc.netty.util.nethernet.SdpUtil;
 import org.cloudburstmc.netty.util.nethernet.StunObserver;
 import org.cloudburstmc.netty.signaling.provider.connectivity.EndpointSelection;
 import org.cloudburstmc.netty.signaling.provider.connectivity.EndpointConnectivityController;
@@ -633,7 +634,7 @@ public final class NativeAdmissionServerChannel extends AbstractServerChannel {
 
     private static String assistedAnswer(
             String description, InetSocketAddress candidate, String type) {
-        return String.join(
+        return SdpUtil.withoutDefaultDestination(String.join(
                         "\r\n",
                         description
                                 .lines()
@@ -649,7 +650,7 @@ public final class NativeAdmissionServerChannel extends AbstractServerChannel {
                 + candidate.getPort()
                 + " typ "
                 + type
-                + "\r\na=end-of-candidates\r\n";
+                + "\r\na=end-of-candidates\r\n");
     }
 
     private void finishAssistedAnswers() {
